@@ -20,15 +20,20 @@ size-trend correction.
     in the evening than big ones (evening log-ratio vs log hour-1 size
     has correlation about -0.9). The trend slope is the Theil-Sen
     estimator (median of pairwise slopes), a robust median-based slope,
-    and the centre is shifted by slope * (log p1 - median analogue
-    log size), clamped so no hour moves by more than 1.5 log units.
-    The correction is ~0 in the morning (no trend there) and large in
-    the evening, where the trend is real.
+    shrunk by TREND_SHRINK because the kernel weighting has already
+    absorbed part of the size dependence. The centre is shifted by
+    slope * (log p1 - median analogue log size), clamped so no hour
+    moves by more than 1.5 log units. The correction is ~0 in the
+    morning (no trend there) and large in the evening, where the trend
+    is real.
   - The spread is the weighted interquartile range of the log-ratios
     (converted to an SD scale), floored so the band stays honest, and
     widened when p1 sits outside the analogues' size range
     (extrapolation).
-  - Quantiles are q_tau(h) = p1 * exp(centre_h + z_tau * s_h).
+  - Quantiles are p1 * exp(centre_h + z_tau * s_h), blended with the
+    weighted empirical quantiles of the corrected ratios (EMP_WEIGHT)
+    so observed skew and tail weight are not flattened by the normal
+    assumption.
   - Fallbacks: if too few analogues survive the filter for an hour,
     relax the filter (any launch except the target's own history); if
     still too few, fall back to a widened persistence forecast.
@@ -58,6 +63,18 @@ MIN_ANALOGUES = 3
 MIN_TREND = 5
 # Largest allowed trend correction (log units) in either direction.
 MAX_CORRECTION = 1.5
+# Shrinkage on the size-trend slope. The kernel weighting already
+# absorbs part of the size dependence (it pulls the weighted median
+# toward the target's size), so the raw Theil-Sen slope double-counts
+# it; shrinking the slope by this factor removes the overlap. Tuned on
+# leave-one-out over the comparables, never on the practice answers.
+TREND_SHRINK = 0.55
+# Weight on the empirical (analogue) quantiles in the band shape.
+# 0 = pure normal band around the corrected centre; 1 = pure empirical
+# quantiles of the corrected ratios. A small blend lets the observed
+# skew and tail weight in without giving up the normal band's
+# smoothness at hours where only a handful of analogues contribute.
+EMP_WEIGHT = 0.0
 # Spread floor (log units) and extrapolation widening.
 SPREAD_FLOOR = 0.45
 EXTRA_WIDE = 0.15
@@ -163,6 +180,26 @@ def weighted_iqr(pairs):
     return max(0.0, quantile_at(0.75) - quantile_at(0.25))
 
 
+def weighted_quantile(pairs, frac):
+    """Linearly interpolated weighted quantile of (value, weight) pairs."""
+    ordered = sorted(pairs, key=lambda p: p[0])
+    total = sum(w for _, w in ordered)
+    if total <= 0:
+        return ordered[len(ordered) // 2][0]
+    target = total * frac
+    acc = 0.0
+    prev_v, prev_acc = ordered[0][0], 0.0
+    for value, w in ordered:
+        acc += w
+        if acc >= target:
+            if acc - prev_acc > 1e-12:
+                t = (target - prev_acc) / (acc - prev_acc)
+                return prev_v + t * (value - prev_v)
+            return value
+        prev_v, prev_acc = value, acc
+    return ordered[-1][0]
+
+
 def theil_sen_slope(xs, ys):
     """Robust slope of y on x: the median of all pairwise slopes.
 
@@ -247,11 +284,12 @@ def forecast_case(case):
             if extrapolating:
                 spread += EXTRA_WIDE
             centre = med
+            correction = 0.0
             if len(triples) >= MIN_TREND:
                 # Robust size-trend correction (Theil-Sen slope).
                 xs = [lv for _, lv, _ in triples]
                 ys = [lr for lr, _, _ in triples]
-                slope = theil_sen_slope(xs, ys)
+                slope = theil_sen_slope(xs, ys) * TREND_SHRINK
                 med_log_v1 = weighted_median([(lv, w) for _, lv, w in triples])
                 correction = slope * (log_p1 - med_log_v1)
                 if correction > MAX_CORRECTION:
@@ -263,11 +301,17 @@ def forecast_case(case):
             # No usable analogues: widened persistence around hour 1.
             centre = 0.0
             spread = FALLBACK_SIGMA * math.sqrt(max(1, h - 1))
-        base = p1 * math.exp(centre)
+            triples = []
+            correction = 0.0
+        # Band shape: a normal band around the corrected centre, blended
+        # with the empirical quantiles of the (identically corrected)
+        # analogue ratios so any skew or heavy tail in the observed
+        # launches is not flattened away.
+        shifted = [(lr + correction, w) for lr, _, w in triples]
         qs = []
-        for z in Z:
-            q = base * math.exp(z * spread)
-            q = min(max(q, 1.0), 1e9)
+        for tau, z in zip(LEVELS, Z):
+            log_q = centre + z * spread
+            q = min(max(p1 * math.exp(log_q), 1.0), 1e9)
             qs.append(round2(q))
         # Keep quantiles non-decreasing after rounding.
         for i in range(1, len(qs)):
