@@ -26,12 +26,24 @@ writes one `.out` forecast per case.
   mostly from huge launches. The median is then corrected for the
   strong size trend in the ratios (small launches ramp far more in the
   evening than big ones, correlation ≈ −0.9) using a robust Theil–Sen
-  slope, clamped to ±1.5 log units.
+  slope, shrunk by 0.55 and clamped to ±1.5 log units.
+- **Why the slope is shrunk:** the kernel weighting already pulls the
+  weighted median part-way toward the target's size, so it absorbs
+  some of the size dependence. Applying the full Theil–Sen slope on top
+  double-counts it and overshoots the evening ramp for large launches.
+  A shrinkage of 0.55 removes the overlap; it was chosen on
+  leave-one-out over the comparables, never on the practice answers.
+- **Band shape:** a normal band around the corrected centre is blended
+  70/30 with the empirical quantiles of the same corrected ratios, so
+  the observed skew and tail weight are not flattened away by assuming
+  normality. The blend is uniform across levels and robust because the
+  underlying ratios are already size-corrected.
 - **Spread:** the weighted interquartile range of the log-ratios,
   floored at 0.45 log units, widened when hour-1 size sits outside the
   analogues' range (GTA VI's hour 1 will likely be 1–3M, above the
   875k training max).
-- **Quantiles:** q_τ(h) = p1 · exp(centre_h + z_τ · s_h).
+- **Quantiles:** q_τ(h) = p1 · exp(centre_h + z_τ · s_h), with the
+  empirical blend as above.
 - **Fallbacks:** too few analogues → relax the filter; none → widened
   persistence around hour 1.
 
@@ -43,13 +55,22 @@ Oct 2023):
 
 | case | this entry | house baseline (starter) |
 |------|-----------|--------------------------|
-| Marvel's Wolverine (h1 23,357) | 0.2753 | 0.7437 |
-| God of War Ragnarök (h1 269,517) | 0.1966 | 0.2146 |
-| mean | **0.2359** | 0.4792 |
+| Marvel's Wolverine (h1 23,357) | 0.2931 | 0.7437 |
+| God of War Ragnarök (h1 269,517) | 0.1584 | 0.2146 |
+| mean | **0.2258** | 0.4792 |
 
-Leave-one-out over the comparables: 0.2724 on large launches
-(p1 ≥ 20,000) vs 0.3214 for the starter; 0.2469 on the 10 largest
-launches vs 0.2626. Outputs are valid (23 rows, hours 2–24, five
+Leave-one-out over the 37 comparables that have a release-day curve
+(each comparable is the pseudo-case, the rest are its analogues):
+
+| set | this entry | starter |
+|-----|-----------|---------|
+| all 37 | 0.4620 | 0.9297 |
+| median | 0.3060 | 0.3248 |
+| p1 ≥ 20,000 (n=27) | 0.2628 | 0.3214 |
+| 10 largest by hour-1 | **0.2306** | 0.2626 |
+
+The 10-largest set is the regime closest to the final: GTA VI's hour 1
+will likely be 1–3M. Outputs are valid (23 rows, hours 2–24, five
 non-decreasing quantiles each), ~0.1 s per case, and byte-identical
 across runs.
 

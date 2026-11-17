@@ -74,7 +74,7 @@ TREND_SHRINK = 0.55
 # quantiles of the corrected ratios. A small blend lets the observed
 # skew and tail weight in without giving up the normal band's
 # smoothness at hours where only a handful of analogues contribute.
-EMP_WEIGHT = 0.0
+EMP_WEIGHT = 0.30
 # Spread floor (log units) and extrapolation widening.
 SPREAD_FLOOR = 0.45
 EXTRA_WIDE = 0.15
@@ -311,6 +311,9 @@ def forecast_case(case):
         qs = []
         for tau, z in zip(LEVELS, Z):
             log_q = centre + z * spread
+            if EMP_WEIGHT > 0.0 and len(shifted) >= MIN_ANALOGUES:
+                emp = weighted_quantile(shifted, tau)
+                log_q = (1.0 - EMP_WEIGHT) * log_q + EMP_WEIGHT * emp
             q = min(max(p1 * math.exp(log_q), 1.0), 1e9)
             qs.append(round2(q))
         # Keep quantiles non-decreasing after rounding.
